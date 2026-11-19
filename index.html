@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Escáner de códigos</title>
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; margin: 0; padding: 16px; background: #f5f6f8; color: #222; }
+  h1 { font-size: 20px; margin: 0 0 12px; }
+  #video { width: 100%; max-height: 45vh; background: #000; border-radius: 8px; }
+  label { display: block; margin-top: 12px; font-weight: 600; font-size: 14px; }
+  input, select, textarea { width: 100%; box-sizing: border-box; font-size: 16px; padding: 10px; border: 1px solid #bbb; border-radius: 8px; margin-top: 4px; background: #fff; }
+  button { width: 100%; font-size: 17px; padding: 12px; border: 0; border-radius: 8px; margin-top: 14px; background: #1a73e8; color: #fff; }
+  button.sec { background: #5f6368; }
+  button:disabled { opacity: .6; }
+  #estado { margin-top: 10px; font-size: 14px; min-height: 20px; }
+  .ok { color: #137333; }
+  .err { color: #c5221f; }
+</style>
+</head>
+<body>
+  <h1>Escáner de códigos</h1>
+
+  <video id="video" playsinline muted></video>
+  <button id="btnCam" class="sec">Iniciar cámara</button>
+
+  <label>Código leído
+    <input id="codigo" placeholder="Escanee o escriba el código">
+  </label>
+  <label>Formato
+    <input id="formato" readonly>
+  </label>
+  <label>Tipo
+    <select id="tipo">
+      <option value="Bodega">Bodega</option>
+      <option value="Medidor">Medidor</option>
+    </select>
+  </label>
+  <label id="lblCantidad">Cantidad
+    <input id="cantidad" type="text" inputmode="decimal" placeholder="0">
+  </label>
+  <label>Usuario
+    <input id="usuario" placeholder="Su nombre">
+  </label>
+  <label>Notas
+    <textarea id="notas" rows="2"></textarea>
+  </label>
+
+  <button id="btnGuardar">Guardar</button>
+  <div id="estado"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
+  <script>
+    // ---- Configuración ----
+    const URL_SCRIPT = "https://script.google.com/macros/s/AKfycbxcbS76qpYNswNEPcUHJjNGMp_TRDp8V1_xUetR0r4c6U6VpluoBT5QFhPDCpmB6M4L/exec";
+    const TOKEN = "esc-K7x2Pq9Lm4Rt8Vw3Zn6Bc";
+    const HOJA = "Escaneos";
+
+    const $ = id => document.getElementById(id);
+    const video = $("video");
+    let lector = null;
+    let controles = null;
+
+    function mostrar(texto, clase) {
+      const e = $("estado");
+      e.textContent = texto;
+      e.className = clase || "";
+    }
+
+    // Recordar el usuario entre usos
+    try { $("usuario").value = localStorage.getItem("usuario") || ""; } catch (e) {}
+
+    // Cambia la etiqueta según el tipo
+    function actualizarEtiqueta() {
+      const esMedidor = $("tipo").value === "Medidor";
+      $("lblCantidad").firstChild.nodeValue = esMedidor ? "Lectura " : "Cantidad ";
+      $("cantidad").placeholder = esMedidor ? "Lectura del medidor" : "Cantidad";
+    }
+    $("tipo").addEventListener("change", actualizarEtiqueta);
+    actualizarEtiqueta();
+
+    // ---- Cámara y lectura de códigos (EAN-13 y Code 128) ----
+    async function iniciarCamara() {
+      if (typeof ZXing === "undefined") {
+        mostrar("No se cargó el lector de códigos. Revise la conexión a internet.", "err");
+        return;
+      }
+      try {
+        const pistas = new Map();
+        pistas.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+          ZXing.BarcodeFormat.EAN_13,
+          ZXing.BarcodeFormat.CODE_128
+        ]);
+        lector = new ZXing.BrowserMultiFormatReader(pistas);
+        controles = await lector.decodeFromConstraints(
+          { video: { facingMode: { ideal: "environment" } } },
+          video,
+          (resultado, error) => {
+            if (resultado) {
+              $("codigo").value = resultado.getText();
+              $("formato").value = resultado.getBarcodeFormat() === ZXing.BarcodeFormat.EAN_13 ? "EAN-13" : "Code 128";
+              if (navigator.vibrate) navigator.vibrate(120);
+              mostrar("Código leído. Revise y guarde.", "ok");
+            }
+          }
+        );
+        $("btnCam").textContent = "Cámara activa";
+        $("btnCam").disabled = true;
+        mostrar("Apunte la cámara al código de barras.", "");
+      } catch (err) {
+        mostrar("No se pudo abrir la cámara. Revise que haya dado permiso y que la página esté en https.", "err");
+      }
+    }
+    $("btnCam").addEventListener("click", iniciarCamara);
+
+    // ---- Guardar en la hoja ----
+    async function guardar() {
+      const codigo = $("codigo").value.trim();
+      const cantidad = $("cantidad").value.trim();
+      if (!codigo) { mostrar("Falta el código.", "err"); return; }
+      if (!cantidad) { mostrar("Falta la cantidad o lectura.", "err"); return; }
+
+      const usuario = $("usuario").value.trim();
+      try { localStorage.setItem("usuario", usuario); } catch (e) {}
+
+      const datos = {
+        token: TOKEN,
+        hoja: HOJA,
+        tipo: $("tipo").value,
+        codigo: codigo,
+        formato: $("formato").value,
+        cantidad: cantidad,
+        usuario: usuario,
+        notas: $("notas").value.trim()
+      };
+
+      const boton = $("btnGuardar");
+      boton.disabled = true;
+      mostrar("Guardando...", "");
+      try {
+        const r = await fetch(URL_SCRIPT, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain;charset=utf-8" },
+          body: JSON.stringify(datos)
+        });
+        const j = await r.json();
+        if (j.ok) {
+          mostrar("Guardado en la hoja.", "ok");
+          $("codigo").value = "";
+          $("formato").value = "";
+          $("cantidad").value = "";
+          $("notas").value = "";
+        } else {
+          mostrar("Error: " + (j.error || "no se guardó"), "err");
+        }
+      } catch (err) {
+        mostrar("No se pudo enviar. Revise la conexión e intente de nuevo.", "err");
+      } finally {
+        boton.disabled = false;
+      }
+    }
+    $("btnGuardar").addEventListener("click", guardar);
+  </script>
+</body>
+</html>
